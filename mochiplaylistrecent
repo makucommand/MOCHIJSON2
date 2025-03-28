@@ -1,0 +1,98 @@
+# 라이브러리 임포트
+from googleapiclient.discovery import build
+import gspread
+from google.oauth2.service_account import Credentials
+from datetime import datetime, timedelta
+
+# YouTube API 설정
+DEVELOPER_KEY = 'AIzaSyB1JX11iq4ndl4DxgsG60qn3Uie5twZcrQ'
+YOUTUBE_API_SERVICE_NAME = 'youtube'
+YOUTUBE_API_VERSION = 'v3'
+
+# YouTube API 클라이언트 생성
+youtube = build(YOUTUBE_API_SERVICE_NAME, YOUTUBE_API_VERSION, developerKey=DEVELOPER_KEY)
+
+# Google Sheets API 인증
+SERVICE_ACCOUNT_FILE = '/content/drive/MyDrive/mochijson.json'
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+credentials = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+gc = gspread.authorize(credentials)
+
+# 스프레드시트 열기
+spreadsheet = gc.open("mochi playlist")
+worksheet_name = "playlists"
+worksheet = spreadsheet.worksheet(worksheet_name)
+
+# 채널 ID로 재생목록 가져오기
+channel_id = 'UCtMfEBv1L_76SOLLnYtC6IA'
+
+playlists = youtube.playlists().list(
+    channelId=channel_id,
+    part='snippet,contentDetails',
+    maxResults=50
+).execute()
+
+# 헤더 추가 (순서 변경)
+header_row = ['Playlist Title', 'Created Date (KST)', 'Last Added Date (KST)', 'Thumbnail URL', 'Playlist URL', 'Playlist ID', 'Video Count']
+worksheet.update(values=[header_row], range_name='A1:G1')
+
+# 재생목록 데이터를 정리하여 시트에 추가
+playlist_data = []
+for playlist in playlists['items']:
+    playlist_id = playlist['id']
+    title = playlist['snippet']['title']
+
+    # ISO 8601 형식의 만든 날짜와 시간 가져오기 및 변환 (UTC -> KST)
+    created_date_iso = playlist['snippet']['publishedAt']
+    try:
+        created_datetime_utc = datetime.strptime(created_date_iso, "%Y-%m-%dT%H:%M:%S.%fZ")
+    except ValueError:
+        created_datetime_utc = datetime.strptime(created_date_iso, "%Y-%m-%dT%H:%M:%SZ")
+
+    # UTC -> KST 변환
+    created_datetime_kst = created_datetime_utc + timedelta(hours=9)
+    created_date_formatted = f"{created_datetime_kst.year}년 {created_datetime_kst.month}월 {created_datetime_kst.day}일 {created_datetime_kst.hour}시 {created_datetime_kst.minute}분 {created_datetime_kst.second}초"
+
+    # playlistItems.list를 사용하여 동영상들의 추가 시간을 확인하고 가장 최근 추가된 시간을 찾음 (UTC -> KST 변환)
+    playlist_items_response = youtube.playlistItems().list(
+        playlistId=playlist_id,
+        part='snippet',
+        maxResults=50
+    ).execute()
+
+    last_added_date_kst = None
+
+    for item in playlist_items_response.get('items', []):
+        video_added_date_iso = item['snippet']['publishedAt']
+        try:
+            video_added_datetime_utc = datetime.strptime(video_added_date_iso, "%Y-%m-%dT%H:%M:%S.%fZ")
+        except ValueError:
+            video_added_datetime_utc = datetime.strptime(video_added_date_iso, "%Y-%m-%dT%H:%M:%SZ")
+
+        # UTC -> KST 변환
+        video_added_datetime_kst = video_added_datetime_utc + timedelta(hours=9)
+
+        if last_added_date_kst is None or video_added_datetime_kst > last_added_date_kst:
+            last_added_date_kst = video_added_datetime_kst
+
+    if last_added_date_kst:
+        last_added_date_formatted = f"{last_added_date_kst.year}년 {last_added_date_kst.month}월 {last_added_date_kst.day}일 {last_added_date_kst.hour}시 {last_added_date_kst.minute}분 {last_added_date_kst.second}초"
+    else:
+        last_added_date_formatted = "No videos"
+
+    # 동영상 개수 가져오기 (YouTube API를 통해 직접 조회)
+    video_count = playlist['contentDetails']['itemCount']
+
+    # 썸네일 URL 확인 및 사용 (default 크기 사용)
+    thumbnail_url = playlist['snippet']['thumbnails']['default']['url']
+
+    # 재생목록 URL 생성
+    playlist_url = f"https://www.youtube.com/playlist?list={playlist_id}"
+
+    # 데이터를 순서대로 추가
+    playlist_data.append([title, created_date_formatted, last_added_date_formatted, thumbnail_url, playlist_url, playlist_id, video_count])
+
+# 시트에 데이터 업데이트 (순서 변경)
+worksheet.update(values=playlist_data, range_name=f'A2:G{len(playlist_data) + 1}')
+
+print("재생목록 데이터를 스프레드시트에 성공적으로 업데이트했습니다!")
